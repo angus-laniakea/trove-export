@@ -1,0 +1,8 @@
+warning: The `tool.uv.dev-dependencies` field (used in `/home/ec2-user/sp-vol/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+Wrote 347 rows to /home/ec2-user/trove-export/greeks_20260331_033001.csv
+Completed 85.9 KiB/85.9 KiB (819.1 KiB/s) with 1 file(s) remainingupload: ./greeks_20260331_033001.csv to s3://laniakea-trading/trove-exports/greeks_20260331_033001.csv
+Uploaded to s3://laniakea-trading/trove-exports/greeks_20260331_033001.csv
+warning: The `tool.uv.dev-dependencies` field (used in `/home/ec2-user/sp-vol/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+Wrote 347 rows to /home/ec2-user/trove-export/greeks_20260331_034001.csv
+Completed 86.6 KiB/86.6 KiB (623.9 KiB/s) with 1 file(s) remainingupload: ./greeks_20260331_034001.csv to s3://laniakea-trading/trove-exports/greeks_20260331_034001.csv
+Uploaded to s3://laniakea-trading/trove-exports/greeks_20260331_034001.csv
