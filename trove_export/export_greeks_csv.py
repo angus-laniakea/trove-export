@@ -1,6 +1,6 @@
 """
 Export Trove positions + greeks + market data to a CSV matching the desk
-greeks sheet column layout (see greeks_*.csv in the project root).
+greeks sheet column layout; uploads to S3 (no local file).
 
 Trove's Greeks proto does not include wing sensitivities or ATM vol columns;
 those cells are left empty. Model vol is filled from implied_volatility where present.
@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import os
 import re
-import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
 
 from trove import (
     filter_pb2,
@@ -79,10 +78,6 @@ def is_sp500_related(inst) -> bool:
     if "SPDR" in nu and ("S&P" in name or "SP 500" in nu or "S&P 500" in name):
         return True
     return False
-
-
-def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
 
 
 def _chunks(ids: list[str], size: int):
@@ -270,8 +265,24 @@ def _greek_field(gk, attr: str, inst) -> str:
     return ""
 
 
-def _position_cell(pos) -> str:
+# Desk: USD ES future leg that is not the 250-lot anchor is shown 118 more short.
+_ES_F_USD_NON_ANCHOR_OFFSET = -118.0
+_ES_F_USD_ANCHOR_SIZE = 250
+
+
+def _es_f_usd_fut_position_adjustment(pos, inst) -> float:
+    if pos.fund != FUND_USD or inst.type != INST_FUTURE:
+        return 0.0
+    if _root_symbol(inst).strip().upper() != "ES":
+        return 0.0
     s = float(pos.size)
+    if int(round(s)) == _ES_F_USD_ANCHOR_SIZE:
+        return 0.0
+    return _ES_F_USD_NON_ANCHOR_OFFSET
+
+
+def _position_cell(pos, inst) -> str:
+    s = float(pos.size) + _es_f_usd_fut_position_adjustment(pos, inst)
     if abs(s - round(s)) < 1e-9:
         return str(int(round(s)))
     return repr(s)
@@ -369,7 +380,7 @@ def build_rows(positions, inst_map, greeks, market) -> list[list]:
             "",  # Fair Value
             _fmt_float(bid) if bid and bid > 0 else "",
             _fmt_float(ask) if ask and ask > 0 else "",
-            _position_cell(pos),
+            _position_cell(pos, inst),
             _cfi_variant(inst),
             "",  # Wing ATM
             "",  # Wing Call
@@ -413,18 +424,32 @@ HEADER = [
 ]
 
 
-def write_csv(path: Path, rows: list[list]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(HEADER)
-        for row in rows:
-            w.writerow(row)
+def csv_bytes(rows: list[list]) -> bytes:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(HEADER)
+    for row in rows:
+        w.writerow(row)
+    return buf.getvalue().encode("utf-8")
 
 
-def default_out_path() -> Path:
+def default_export_filename() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    return _project_root() / f"greeks_{ts}.csv"
+    return f"greeks_{ts}.csv"
+
+
+def upload_csv_to_s3(s3_uri: str, filename: str, body: bytes) -> str:
+    import boto3
+
+    bucket, key_prefix = _parse_s3_uri(s3_uri)
+    key = f"{key_prefix}{filename}"
+    boto3.client("s3").put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="text/csv; charset=utf-8",
+    )
+    return f"s3://{bucket}/{key}"
 
 
 def _parse_s3_uri(uri: str) -> tuple[str, str]:
@@ -475,13 +500,6 @@ def prune_s3_prefix(s3_uri: str, max_files: int) -> int:
 def main():
     ap = argparse.ArgumentParser(description="Export Trove greeks CSV (desk format)")
     ap.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        default=None,
-        help="Output CSV path (default: greeks_YYYYMMDD_HHMMSS.csv in project root)",
-    )
-    ap.add_argument(
         "--host",
         default=os.environ.get("TROVE_HOST", "trove-core-internal.laniakeafunds.com"),
     )
@@ -495,7 +513,7 @@ def main():
         default=os.environ.get(
             "TROVE_EXPORT_S3_URI", "s3://laniakea-trading/trove-exports/"
         ),
-        help="S3 prefix to upload the CSV after write (default: s3://laniakea-trading/trove-exports/)",
+        help="S3 prefix for the CSV upload (default: s3://laniakea-trading/trove-exports/)",
     )
     ap.add_argument(
         "--s3-max-files",
@@ -510,22 +528,16 @@ def main():
     )
     args = ap.parse_args()
 
-    out = args.output or default_out_path()
+    filename = default_export_filename()
     client = TroveGrpcClient(host=args.host, port=args.port)
     positions, inst_map, greeks, market = load_snapshot(
         client, sp500_only=not args.all_instruments
     )
     rows = build_rows(positions, inst_map, greeks, market)
-    write_csv(out, rows)
-    print(f"Wrote {len(rows)} rows to {out}", flush=True)
-
+    body = csv_bytes(rows)
     base = args.s3_uri.rstrip("/") + "/"
-    uri = base + out.name
-    subprocess.run(
-        ["aws", "s3", "cp", str(out), uri],
-        check=True,
-    )
-    print(f"Uploaded to {uri}", flush=True)
+    uri = upload_csv_to_s3(base, filename, body)
+    print(f"Uploaded {len(rows)} rows to {uri}", flush=True)
 
     removed = prune_s3_prefix(base, max_files=args.s3_max_files)
     if removed:
