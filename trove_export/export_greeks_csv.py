@@ -15,20 +15,19 @@ import os
 import re
 from datetime import datetime, timezone
 
-from trove import (
-    filter_pb2,
-    instrument_pb2,
-    position_pb2,
-)
 
-from trove_export.trove_grpc_client import TroveGrpcClient
+from trove.instruments.v1 import instruments_service_pb2, instruments_pb2
+from trove.marketdata.v1 import market_data_service_pb2
+from trove.positions.v1 import positions_service_pb2, positions_pb2
+from trove_client.client import TroveClient
+from trove.common.v1 import filter_pb2
 
-INST_IEOPTION = instrument_pb2.INSTRUMENT_TYPE_IEOPTION
-INST_FOPTION = instrument_pb2.INSTRUMENT_TYPE_FOPTION
-INST_FUTURE = instrument_pb2.INSTRUMENT_TYPE_FUTURE
-INST_EQUITY = instrument_pb2.INSTRUMENT_TYPE_EQUITY
-OPT_CALL = instrument_pb2.OPTION_RIGHT_CALL
-OPT_PUT = instrument_pb2.OPTION_RIGHT_PUT
+INST_IEOPTION = instruments_pb2.INSTRUMENT_TYPE_IEOPTION
+INST_FOPTION = instruments_pb2.INSTRUMENT_TYPE_FOPTION
+INST_FUTURE = instruments_pb2.INSTRUMENT_TYPE_FUTURE
+INST_EQUITY = instruments_pb2.INSTRUMENT_TYPE_EQUITY
+OPT_CALL = instruments_pb2.OPTION_RIGHT_CALL
+OPT_PUT = instruments_pb2.OPTION_RIGHT_PUT
 
 FUND_USD = 1
 FUND_AUD = 2
@@ -85,23 +84,27 @@ def _chunks(ids: list[str], size: int):
         yield ids[i : i + size]
 
 
-def _fetch_greeks_merged(client: TroveGrpcClient, instrument_ids: list[str]) -> dict:
+def _fetch_greeks_merged(client: TroveClient, instrument_ids: list[str]) -> dict:
     merged: dict = {}
     for chunk in _chunks(instrument_ids, _GREEKS_CHUNK):
-        merged.update(client.get_greeks_batch(instrument_ids=chunk))
+        res = client.get_greeks_batch(market_data_service_pb2.GetGreeksBatchRequest(instrument_ids=chunk))
+        merged.update(res.greeks_map)
     missing = [i for i in instrument_ids if i not in merged]
     for iid in missing:
-        merged.update(client.get_greeks_batch(instrument_ids=[iid]))
+        res = client.get_greeks_batch(market_data_service_pb2.GetGreeksBatchRequest(instrument_ids=[iid]))
+        merged.update(res.greeks_map)
     return merged
 
 
-def _fetch_market_merged(client: TroveGrpcClient, instrument_ids: list[str]) -> dict:
+def _fetch_market_merged(client: TroveClient, instrument_ids: list[str]) -> dict:
     merged: dict = {}
     for chunk in _chunks(instrument_ids, _MARKET_CHUNK):
-        merged.update(client.get_market_data_batch(instrument_ids=chunk))
+        res = client.get_market_data_batch(market_data_service_pb2.GetMarketDataBatchRequest(instrument_ids=chunk))
+        merged.update(res.market_data_map)
     missing = [i for i in instrument_ids if i not in merged]
     for iid in missing:
-        merged.update(client.get_market_data_batch(instrument_ids=[iid]))
+        res = client.get_market_data_batch(market_data_service_pb2.GetMarketDataBatchRequest(instrument_ids=[iid]))
+        merged.update(res.market_data_map)
     return merged
 
 
@@ -304,19 +307,21 @@ def _instrument_underlying_price(
     return _fmt_float(su) if su and su > 0 else ""
 
 
-def load_snapshot(client: TroveGrpcClient, *, sp500_only: bool = True):
-    positions = list(
-        client.list_positions(position_filter=position_pb2.PositionFilter())
-    )
+def load_snapshot(client: TroveClient, *, sp500_only: bool = True):
+    res_positions = client.list_positions(positions_service_pb2.ListPositionsRequest(filter=positions_pb2.PositionFilter()))
+    positions = list(res_positions.positions)
     if not positions:
         return positions, {}, {}, {}
 
     ids = list({p.instrument_id for p in positions})
-    instruments = client.list_instruments(
-        instrument_filter=instrument_pb2.InstrumentFilter(
-            ids=filter_pb2.StringFilter(includes=ids),
+    res_instruments = client.list_instruments(
+        instruments_service_pb2.ListInstrumentsRequest(
+            filter=instruments_pb2.InstrumentFilter(
+                ids=filter_pb2.StringFilter(includes=ids),
+            )
         )
     )
+    instruments = res_instruments.instruments
     inst_map = {i.id: i for i in instruments}
     if sp500_only:
         positions = [
@@ -501,7 +506,7 @@ def main():
     ap = argparse.ArgumentParser(description="Export Trove greeks CSV (desk format)")
     ap.add_argument(
         "--host",
-        default=os.environ.get("TROVE_HOST", "trove-core-internal.laniakeafunds.com"),
+        default=os.environ.get("TROVE_HOST", "trove.laniakeafunds.com"),
     )
     ap.add_argument(
         "--port",
@@ -529,7 +534,19 @@ def main():
     args = ap.parse_args()
 
     filename = default_export_filename()
-    client = TroveGrpcClient(host=args.host, port=args.port)
+    
+    # Default max message size: 50MB
+    MAX_MESSAGE_SIZE = 50 * 1024 * 1024
+    channel_options = [
+        ("grpc.max_receive_message_length", MAX_MESSAGE_SIZE),
+        ("grpc.max_send_message_length", MAX_MESSAGE_SIZE),
+    ]
+    client = TroveClient(
+        host=args.host,
+        port=args.port,
+        use_tls=True,
+        channel_options=channel_options
+    )
     positions, inst_map, greeks, market = load_snapshot(
         client, sp500_only=not args.all_instruments
     )

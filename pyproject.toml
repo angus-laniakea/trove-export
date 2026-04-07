@@ -2,19 +2,19 @@
 name = "trove-export"
 version = "0.1.0"
 description = "Export Trove greeks to CSV (desk format) and optionally upload to S3"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "boto3>=1.34",
-    "grpcio>=1.60",
-    "protobuf>=4.25",
-    "trove",
+    "trove-client",
+    "trove-proto",
 ]
 
 [project.scripts]
 export-trove-greeks = "trove_export.export_greeks_csv:main"
 
 [tool.uv.sources]
-trove = { path = "../sp-vol/trove/proto/gen/python/trove" }
+trove-client = { path = "trove/libs/python/trove_client" }
+trove-proto = { path = "trove/proto/gen/python" }
 
 [build-system]
 requires = ["hatchling"]
