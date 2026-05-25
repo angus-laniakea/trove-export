@@ -16,11 +16,10 @@ import re
 from datetime import datetime, timezone
 
 
-from trove.instruments.v1 import instruments_service_pb2, instruments_pb2
-from trove.marketdata.v1 import market_data_service_pb2
-from trove.positions.v1 import positions_service_pb2, positions_pb2
+from trove.instruments.v1 import instruments_pb2
+from trove.positions.v1 import positions_pb2
 from trove_client.client import TroveClient
-from trove.common.v1 import filter_pb2
+from trove.common.v1 import filter_pb2, source_pb2
 
 INST_IEOPTION = instruments_pb2.INSTRUMENT_TYPE_IEOPTION
 INST_FOPTION = instruments_pb2.INSTRUMENT_TYPE_FOPTION
@@ -87,24 +86,20 @@ def _chunks(ids: list[str], size: int):
 def _fetch_greeks_merged(client: TroveClient, instrument_ids: list[str]) -> dict:
     merged: dict = {}
     for chunk in _chunks(instrument_ids, _GREEKS_CHUNK):
-        res = client.get_greeks_batch(market_data_service_pb2.GetGreeksBatchRequest(instrument_ids=chunk))
-        merged.update(res.greeks_map)
+        merged.update(client.market_data.get_greeks_batch(chunk))
     missing = [i for i in instrument_ids if i not in merged]
     for iid in missing:
-        res = client.get_greeks_batch(market_data_service_pb2.GetGreeksBatchRequest(instrument_ids=[iid]))
-        merged.update(res.greeks_map)
+        merged.update(client.market_data.get_greeks_batch([iid]))
     return merged
 
 
 def _fetch_market_merged(client: TroveClient, instrument_ids: list[str]) -> dict:
     merged: dict = {}
     for chunk in _chunks(instrument_ids, _MARKET_CHUNK):
-        res = client.get_market_data_batch(market_data_service_pb2.GetMarketDataBatchRequest(instrument_ids=chunk))
-        merged.update(res.market_data_map)
+        merged.update(client.market_data.get_batch(chunk))
     missing = [i for i in instrument_ids if i not in merged]
     for iid in missing:
-        res = client.get_market_data_batch(market_data_service_pb2.GetMarketDataBatchRequest(instrument_ids=[iid]))
-        merged.update(res.market_data_map)
+        merged.update(client.market_data.get_batch([iid]))
     return merged
 
 
@@ -308,20 +303,16 @@ def _instrument_underlying_price(
 
 
 def load_snapshot(client: TroveClient, *, sp500_only: bool = True):
-    res_positions = client.list_positions(positions_service_pb2.ListPositionsRequest(filter=positions_pb2.PositionFilter()))
-    positions = list(res_positions.positions)
+    positions = client.positions.list(positions_pb2.PositionFilter())
     if not positions:
         return positions, {}, {}, {}
 
     ids = list({p.instrument_id for p in positions})
-    res_instruments = client.list_instruments(
-        instruments_service_pb2.ListInstrumentsRequest(
-            filter=instruments_pb2.InstrumentFilter(
-                ids=filter_pb2.StringFilter(includes=ids),
-            )
+    instruments = client.instruments.collect(
+        instruments_pb2.InstrumentFilter(
+            ids=filter_pb2.StringFilter(includes=ids),
         )
     )
-    instruments = res_instruments.instruments
     inst_map = {i.id: i for i in instruments}
     if sp500_only:
         positions = [
