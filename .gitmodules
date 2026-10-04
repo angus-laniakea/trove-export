@@ -1,0 +1,4 @@
+[submodule "trove"]
+	path = trove
+	url = git@github.com:LaniakeaFunds/trove.git
+	branch = better-ids

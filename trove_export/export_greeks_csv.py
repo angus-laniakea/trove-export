@@ -86,10 +86,10 @@ def _chunks(ids: list[str], size: int):
 def _fetch_greeks_merged(client: TroveClient, instrument_ids: list[str]) -> dict:
     merged: dict = {}
     for chunk in _chunks(instrument_ids, _GREEKS_CHUNK):
-        merged.update(client.market_data.get_greeks_batch(chunk))
+        merged.update(client.greeks.get_greeks_batch(chunk))
     missing = [i for i in instrument_ids if i not in merged]
     for iid in missing:
-        merged.update(client.market_data.get_greeks_batch([iid]))
+        merged.update(client.greeks.get_greeks_batch([iid]))
     return merged
 
 
@@ -264,7 +264,7 @@ def _greek_field(gk, attr: str, inst) -> str:
 
 
 # Desk: USD ES future leg that is not the 250-lot anchor is shown 118 more short.
-_ES_F_USD_NON_ANCHOR_OFFSET = -118.0
+_ES_F_USD_NON_ANCHOR_OFFSET = 0
 _ES_F_USD_ANCHOR_SIZE = 250
 
 
@@ -277,6 +277,14 @@ def _es_f_usd_fut_position_adjustment(pos, inst) -> float:
     if int(round(s)) == _ES_F_USD_ANCHOR_SIZE:
         return 0.0
     return _ES_F_USD_NON_ANCHOR_OFFSET
+
+
+def _position_source_cell(pos) -> str:
+    """Proto enum name for Trove position source (e.g. ``SOURCE_TYPE_IB``)."""
+    t = pos.source.type
+    if t == source_pb2.SOURCE_TYPE_UNSPECIFIED:
+        return ""
+    return source_pb2.SourceType.Name(t)
 
 
 def _position_cell(pos, inst) -> str:
@@ -296,9 +304,9 @@ def _instrument_underlying_price(
     if _is_futures_or_stock(inst):
         if bid and ask and bid > 0 and ask > 0:
             return _fmt_float((float(bid) + float(ask)) / 2.0)
-        su = gk.synthetic_underlying_price if gk else None
+        su = gk.underlying_price if gk else None
         return _fmt_float(su) if su and su > 0 else ""
-    su = gk.synthetic_underlying_price if gk else None
+    su = gk.underlying_price if gk else None
     return _fmt_float(su) if su and su > 0 else ""
 
 
@@ -353,8 +361,9 @@ def build_rows(positions, inst_map, greeks, market) -> list[list]:
         else:
             model_vol = None
 
-        bid = md.bid_price if md else None
-        ask = md.ask_price if md else None
+        quote = md.quote if md is not None and md.HasField("quote") else None
+        bid = quote.bid_price if quote is not None else None
+        ask = quote.ask_price if quote is not None else None
 
         delta_cell, call_delta_cell = _delta_columns(inst, gk)
 
@@ -384,6 +393,7 @@ def build_rows(positions, inst_map, greeks, market) -> list[list]:
             _instrument_underlying_price(inst, gk, bid, ask),
             "0.0",
             "",  # Implicit ATM Slope
+            _position_source_cell(pos),
             _fund_label(pos.fund),
         ]
         rows.append(row)
@@ -416,6 +426,7 @@ HEADER = [
     "Instrument Underlying Price",
     "Instrument Underlying Offset",
     "Instrument Implicit ATM Slope",
+    "Position Source",
     "Fund",
 ]
 
@@ -497,7 +508,7 @@ def main():
     ap = argparse.ArgumentParser(description="Export Trove greeks CSV (desk format)")
     ap.add_argument(
         "--host",
-        default=os.environ.get("TROVE_HOST", "trove.laniakeafunds.com"),
+        default=os.environ.get("TROVE_HOST", "trove.internal.laniakeafunds.com"),
     )
     ap.add_argument(
         "--port",

@@ -14,7 +14,7 @@ export-trove-greeks = "trove_export.export_greeks_csv:main"
 
 [tool.uv.sources]
 trove-client = { path = "trove/libs/python/trove_client" }
-trove-proto = { path = "trove/proto/gen/python" }
+trove-proto = { path = "trove/proto/gen/python", editable = true }
 
 [build-system]
 requires = ["hatchling"]
